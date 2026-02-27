@@ -2,15 +2,18 @@
 
 This skill uses these Umami endpoints:
 
-1. `GET /websites/{websiteId}/stats`
+1. `GET /websites/{websiteId}`
+   - Purpose: website metadata (for example `name`)
+
+2. `GET /websites/{websiteId}/stats`
    - Purpose: basic metrics (`visitors`, `visits`, `totaltime`)
    - Query: `startAt`, `endAt` (epoch milliseconds)
 
-2. `GET /reports`
+3. `GET /reports`
    - Purpose: read configured funnel reports
    - Query: `websiteId`, `type=funnel`, `page`, `pageSize`
 
-3. `POST /reports/funnel`
+4. `POST /reports/funnel`
    - Purpose: execute funnel for selected date range
    - Body shape:
      - `websiteId`

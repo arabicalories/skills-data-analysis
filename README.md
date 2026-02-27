@@ -1,6 +1,6 @@
 # skills-data-analysis
 
-Pull Umami daily analytics summary (basic metrics + funnel metrics) for yesterday.
+Pull Umami daily analytics summary (website name + basic metrics + funnel metrics) for yesterday.
 
 ## Requirements
 
@@ -22,6 +22,7 @@ Required/commonly used:
 - `UMAMI_BASE_URL` (default: `https://api.umami.is/v1`)
 - `UMAMI_WEBSITE_ID`
 - `UMAMI_TIMEZONE` (example: `Asia/Shanghai`)
+- `FEISHU_WEBHOOK_URL` (push destination)
 
 Optional:
 
@@ -31,23 +32,29 @@ Optional:
 
 ## Quick Start
 
-```bash
-export UMAMI_BASE_URL="https://api.umami.is/v1"
-export UMAMI_API_KEY="your_api_key"  # or UMAMI_BEARER_TOKEN
-export UMAMI_WEBSITE_ID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-export UMAMI_TIMEZONE="Asia/Shanghai"
+Create `.env` with `KEY=` format:
 
+```bash
+UMAMI_BASE_URL=https://api.umami.is/v1
+UMAMI_API_KEY=your_api_key  # or UMAMI_BEARER_TOKEN
+UMAMI_WEBSITE_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+UMAMI_TIMEZONE=Asia/Shanghai
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxx
+```
+
+Run:
+
+```bash
 python3 scripts/umami_daily_summary.py
 ```
 
-If you keep values in `.env`, load it first:
+The script auto-loads `.env` in the current directory. You can override the file:
 
 ```bash
-set -a
-source .env
-set +a
-python3 scripts/umami_daily_summary.py
+python3 scripts/umami_daily_summary.py --env-file /path/to/.env
 ```
+
+After summary rendering, the script pushes the result to `FEISHU_WEBHOOK_URL`.
 
 ## Output
 
@@ -73,6 +80,7 @@ python3 scripts/umami_daily_summary.py --format json --output /tmp/umami_daily.j
 
 - The script uses Python standard library (`urllib`, `zoneinfo`, etc.).
 - `totaltime` from Umami stats is treated as seconds.
+- Website name is fetched and displayed in the summary.
 - Funnel display names are currently:
   - `pv -> login` -> `登录率`
   - `pv -> purchase` -> `付费率`

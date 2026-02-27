@@ -1,29 +1,31 @@
 ---
 name: skills-data-analysis
-description: Pull Umami project analytics for a fixed daily summary. Use when the user asks to aggregate Umami data for yesterday (full day), including basic metrics (visitors, visits, visit duration) and funnel conversion results (for example pv to login, pv to purchase, guest trial, pricing).
+description: Pull Umami project analytics for a fixed daily summary, format the result, then push it to Feishu webhook. Use when the user asks to aggregate yesterday full-day metrics (visitors, visits, visit duration) and funnel conversion results (for example pv to login, pv to purchase, guest trial, pricing).
 ---
 
 # Skills Data Analysis
 
 ## Overview
 
-Produce a repeatable Umami daily summary with two sections:
+Produce a repeatable Umami daily summary with website info and two data sections:
 
-1. Basic metrics
-2. Funnel metrics
+1. Website info
+2. Basic metrics
+3. Funnel metrics
 
 Use the bundled script to avoid hand-writing API calls.
 
 ## Quick Start
 
-Set environment variables:
+Create `.env` in `KEY=` format:
 
 ```bash
-export UMAMI_BASE_URL="https://api.umami.is/v1"
-export UMAMI_API_KEY="your_api_key"            # Cloud auth
-# OR export UMAMI_BEARER_TOKEN="your_token"    # Self-hosted auth
-export UMAMI_WEBSITE_ID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-export UMAMI_TIMEZONE="Asia/Shanghai"
+UMAMI_BASE_URL=https://api.umami.is/v1
+UMAMI_API_KEY=your_api_key            # Cloud auth
+# UMAMI_BEARER_TOKEN=your_token        # Self-hosted auth
+UMAMI_WEBSITE_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+UMAMI_TIMEZONE=Asia/Shanghai
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxx
 ```
 
 Run:
@@ -31,6 +33,9 @@ Run:
 ```bash
 python3 scripts/umami_daily_summary.py
 ```
+
+The script auto-loads `.env`. You can override it with `--env-file /path/to/.env`.
+After summary rendering, the script pushes the final result to `FEISHU_WEBHOOK_URL`.
 
 The script defaults to:
 
@@ -41,14 +46,17 @@ The script defaults to:
 ## Workflow
 
 1. Compute yesterday's start/end timestamps from timezone.
-2. Query `GET /websites/:websiteId/stats` for basic metrics.
-3. Query `GET /reports?type=funnel` to load configured funnel reports.
-4. Match target funnel names to configured report names.
-5. Run each matched funnel with `POST /reports/funnel`.
-6. Render final output with:
+2. Query website metadata to get website name.
+3. Query `GET /websites/:websiteId/stats` for basic metrics.
+4. Query `GET /reports?type=funnel` to load configured funnel reports.
+5. Match target funnel names to configured report names.
+6. Run each matched funnel with `POST /reports/funnel`.
+7. Render final output with:
    - `Umami`
+   - `Website`
    - `基础数据`
    - `漏斗数据`
+8. Push final formatted result to Feishu webhook.
 
 ## Name Matching Rules
 

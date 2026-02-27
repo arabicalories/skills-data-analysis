@@ -30,6 +30,7 @@ DEFAULT_FUNNEL_DISPLAY_NAMES = {
     "guest trial": "试用率",
     "pricing": "价格查看率",
 }
+ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class UmamiApiError(RuntimeError):
@@ -133,6 +134,51 @@ class UmamiClient:
             },
         )
 
+    def get_website_name(self, website_id: str) -> str:
+        # Preferred: direct detail endpoint.
+        try:
+            detail = self.request("GET", f"websites/{website_id}")
+        except UmamiApiError:
+            detail = None
+
+        if isinstance(detail, dict):
+            detail_name = str(detail.get("name") or "").strip()
+            detail_id = str(detail.get("websiteId") or detail.get("id") or "").strip()
+            if detail_name and (not detail_id or detail_id == website_id):
+                return detail_name
+
+        # Fallback: list endpoint and match website id.
+        page = 1
+        page_size = 100
+        while True:
+            try:
+                resp = self.request(
+                    "GET",
+                    "websites",
+                    query={
+                        "page": page,
+                        "pageSize": page_size,
+                    },
+                )
+            except UmamiApiError:
+                break
+
+            listed_name = extract_website_name_by_id(resp, website_id)
+            if listed_name:
+                return listed_name
+
+            data = extract_website_rows(resp)
+            if not data or len(data) < page_size:
+                break
+
+            total_count = resp.get("count") if isinstance(resp, dict) else None
+            if isinstance(total_count, int) and page * page_size >= total_count:
+                break
+
+            page += 1
+
+        return ""
+
     def get_funnel_reports(self, website_id: str) -> list[dict[str, Any]]:
         reports: list[dict[str, Any]] = []
         page = 1
@@ -197,6 +243,108 @@ class UmamiClient:
 
 def to_iso(ts: datetime) -> str:
     return ts.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def extract_website_rows(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        return [payload]
+    return []
+
+
+def extract_website_name_by_id(payload: Any, website_id: str) -> str:
+    rows = extract_website_rows(payload)
+    for row in rows:
+        row_id = str(row.get("websiteId") or row.get("id") or "").strip()
+        if not row_id or row_id != website_id:
+            continue
+        name = str(row.get("name") or "").strip()
+        if name:
+            return name
+    return ""
+
+
+def parse_env_line(raw_line: str, line_no: int, env_path: str) -> tuple[str, str] | None:
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+        return None
+
+    if line.startswith("export "):
+        line = line[len("export ") :].strip()
+        if not line:
+            raise UmamiApiError(f"Invalid env line {line_no} in {env_path}: empty export.")
+
+    if "=" in line:
+        key, raw_value = line.split("=", 1)
+    else:
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            raise UmamiApiError(
+                f"Invalid env line {line_no} in {env_path}: expected KEY VALUE or KEY=VALUE."
+            )
+        key, raw_value = parts[0], parts[1]
+
+    key = key.strip()
+    if not ENV_KEY_PATTERN.match(key):
+        raise UmamiApiError(f"Invalid env key '{key}' at line {line_no} in {env_path}.")
+
+    value = strip_inline_comment(raw_value).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+
+    return key, value
+
+
+def strip_inline_comment(value: str) -> str:
+    in_single = False
+    in_double = False
+    escaped = False
+
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+
+        if char == "\\" and (in_single or in_double):
+            escaped = True
+            continue
+
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+
+        if char == "#" and not in_single and not in_double:
+            if index == 0 or value[index - 1].isspace():
+                return value[:index]
+
+    return value
+
+
+def load_env_file(env_path: str) -> None:
+    if not env_path:
+        return
+    if not os.path.exists(env_path):
+        return
+
+    try:
+        with open(env_path, "r", encoding="utf-8") as fp:
+            for line_no, raw_line in enumerate(fp, start=1):
+                parsed = parse_env_line(raw_line, line_no, env_path)
+                if not parsed:
+                    continue
+                key, value = parsed
+                # Keep explicit shell env higher priority than env file content.
+                os.environ.setdefault(key, value)
+    except OSError as exc:
+        raise UmamiApiError(f"Failed to read env file {env_path}: {exc}") from exc
 
 
 def parse_target_day(day_str: str | None, tz_name: str) -> RangeInfo:
@@ -299,7 +447,7 @@ def build_summary(
     basic_stats: dict[str, Any],
     funnel_results: list[dict[str, Any]],
     available_report_names: list[str],
-    website_id: str,
+    website_name: str,
 ) -> dict[str, Any]:
     visitors = int(metric_value(basic_stats, "visitors"))
     visits = int(metric_value(basic_stats, "visits"))
@@ -309,7 +457,7 @@ def build_summary(
 
     return {
         "source": "Umami",
-        "website_id": website_id,
+        "website_name": website_name,
         "date": str(range_info.day),
         "timezone": range_info.timezone_name,
         "time_range": {
@@ -334,9 +482,13 @@ def build_summary(
 
 def render_markdown(summary: dict[str, Any]) -> str:
     basic = summary["basic_data"]
+    website_name = str(summary.get("website_name") or "").strip()
+    website_label = website_name or "unknown"
+
     lines: list[str] = [
         "Umami",
         "基础数据",
+        f"- Website: {website_label}",
         f"- Date: {summary['date']} ({summary['timezone']})",
         f"- Visitors: {basic['visitors']}",
         f"- Visits: {basic['visits']}",
@@ -367,6 +519,54 @@ def render_markdown(summary: dict[str, Any]) -> str:
         lines.append(f"- {display_name}: {start} -> {final}, conversion={rate_str}")
 
     return "\n".join(lines)
+
+
+def push_to_feishu(webhook_url: str, text: str, timeout: float) -> None:
+    payload = {
+        "msg_type": "text",
+        "content": {
+            "text": text,
+        },
+    }
+    req = urllib.request.Request(
+        url=webhook_url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": os.getenv("UMAMI_USER_AGENT", DEFAULT_USER_AGENT).strip()
+            or DEFAULT_USER_AGENT,
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        raise UmamiApiError(
+            f"Feishu webhook HTTP {exc.code}: {err_body or '(empty response)'}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise UmamiApiError(f"Failed to push to Feishu webhook: {exc}") from exc
+
+    if not raw:
+        return
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return
+
+    if not isinstance(data, dict):
+        return
+
+    code = data.get("code")
+    status_code = data.get("StatusCode")
+    status_msg = data.get("msg") or data.get("StatusMessage") or data.get("message")
+    if (isinstance(code, int) and code != 0) or (isinstance(status_code, int) and status_code != 0):
+        raise UmamiApiError(f"Feishu webhook rejected message: {status_msg or data}")
 
 
 def run_funnels(
@@ -481,8 +681,21 @@ def run_funnels(
     return results, available_names
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    bootstrap = argparse.ArgumentParser(add_help=False)
+    bootstrap.add_argument(
+        "--env-file",
+        default=os.getenv("UMAMI_ENV_FILE", ".env"),
+        help=(
+            "Path to env file. Supports KEY VALUE or KEY=VALUE per line. "
+            "Defaults to .env or UMAMI_ENV_FILE."
+        ),
+    )
+    bootstrap_args, _ = bootstrap.parse_known_args(argv)
+    load_env_file(bootstrap_args.env_file)
+
     parser = argparse.ArgumentParser(
+        parents=[bootstrap],
         description=(
             "Fetch Umami daily summary for yesterday (basic metrics + configured funnel metrics)."
         )
@@ -537,23 +750,37 @@ def parse_args() -> argparse.Namespace:
         default=30.0,
         help="HTTP timeout in seconds. Default 30.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--feishu-webhook-url",
+        default=os.getenv("FEISHU_WEBHOOK_URL", ""),
+        help=(
+            "Feishu bot webhook URL. "
+            "Defaults to FEISHU_WEBHOOK_URL env."
+        ),
+    )
+    return parser.parse_args(argv)
 
 
 def main() -> int:
-    args = parse_args()
-    website_id = args.website_id.strip()
-    if not website_id:
-        print("Missing website id. Set --website-id or UMAMI_WEBSITE_ID.", file=sys.stderr)
-        return 2
-
     try:
+        args = parse_args()
+        website_id = args.website_id.strip()
+        if not website_id:
+            print("Missing website id. Set --website-id or UMAMI_WEBSITE_ID.", file=sys.stderr)
+            return 2
+        webhook_url = args.feishu_webhook_url.strip()
+        if not webhook_url:
+            raise UmamiApiError(
+                "Missing Feishu webhook URL. Set FEISHU_WEBHOOK_URL or --feishu-webhook-url."
+            )
+
         range_info = parse_target_day(args.day, args.timezone)
         target_names = parse_funnel_names(args.funnel_names)
         report_map = parse_report_map(args.report_name_map)
         client = UmamiClient(args.base_url, timeout=args.timeout)
 
         basic_stats = client.get_basic_stats(website_id, range_info)
+        website_name = client.get_website_name(website_id)
         funnel_results, available_names = run_funnels(
             client=client,
             website_id=website_id,
@@ -567,7 +794,7 @@ def main() -> int:
             basic_stats=basic_stats,
             funnel_results=funnel_results,
             available_report_names=available_names,
-            website_id=website_id,
+            website_name=website_name,
         )
 
         if args.format == "json":
@@ -580,6 +807,10 @@ def main() -> int:
                 fp.write(rendered + "\n")
         else:
             print(rendered)
+
+        push_body = rendered if args.format == "markdown" else render_markdown(summary)
+        push_to_feishu(webhook_url, push_body, timeout=args.timeout)
+        print("Pushed summary to Feishu webhook.", file=sys.stderr)
         return 0
     except (UmamiApiError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
