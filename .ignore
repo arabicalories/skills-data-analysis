@@ -1,0 +1,15 @@
+# Local secrets
+.env
+
+# Python cache/build
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Packaged artifacts
+*.skill
+
+# OS noise
+.DS_Store
